@@ -154,6 +154,9 @@ python3 trigger-workflow.py
 git rm .github/workflows/cron-test.yml && git commit -m "移除诊断工作流" && git push
 ```
 
+> 💡 **如果你自己有常开的 Linux 服务器**，可以完全跳过上面这一整套（PAT、cron-job.org 都不需要），
+> 直接用 systemd 定时器跑，最省事也最可靠——见 **[十、部署到自己的 Linux 服务器](#十部署到自己的-linux-服务器最稳的方案)**。
+
 ---
 
 ## 三、它在盯哪些页面
@@ -337,7 +340,133 @@ GitHub 有个规则：仓库 **60 天没有任何活动**，定时任务会被�
 | `.github/workflows/monitor.yml` | GitHub Actions 定时任务（每 10 分钟）。用 `checkout@v7` / `setup-python@v7` / `cache@v6`，均为 Node 24 运行时，不会有弃用告警 |
 | `.github/workflows/cron-test.yml` | 诊断用：验证 GitHub 的 `schedule` 触发器到底会不会响，确认后可删 |
 | `run-local.sh` | 本地运行脚本，自动读取同目录的 `local.env` 获取凭据 |
+| `deploy-server.sh` | 一条命令把最新代码同步到 Linux 服务器（`/opt/airshow-monitor`），并做语法自检 |
 | `com.zhuhai.airshow.monitor.plist` | 可选的 macOS 本机定时任务（另一种兜底） |
 | `local.env` | 本机凭据（`PUSHPLUS_TOKEN=...`），已 gitignore，不会提交 |
 | `state/` | 运行状态（已看过的公告和句子），已加入 .gitignore |
 | `requirements.txt` | 空的——本项目零依赖 |
+
+---
+
+## 十、部署到自己的 Linux 服务器（最稳的方案）
+
+**适合谁**：你有一台常年开机的 Linux 服务器（NAS、小主机、云服务器都行）。
+**好处**：不用 PAT、不用 cron-job.org、不用管 GitHub 的 schedule 靠不靠谱，
+systemd 的定时器是本地触发的，准时且不会「被静默停用」。
+
+以下命令里的 `192.168.0.10`、`root`、`~/.ssh/bomweb_ubuntu` 请换成你自己的。
+
+### 10.1 服务器需要什么
+
+只要两样：**Python 3.8+**（只用到标准库，不用装任何 pip 包）和 **systemd**。
+Debian / Ubuntu / CentOS / 群晖等都能直接跑。
+
+```bash
+ssh root@192.168.0.10 "python3 -V && systemctl --version | head -1"
+```
+
+### 10.2 建目录和两个 systemd 单元
+
+```bash
+ssh root@192.168.0.10 "mkdir -p /opt/airshow-monitor/state"
+```
+
+`/etc/systemd/system/airshow-monitor.service`：
+
+```ini
+[Unit]
+Description=珠海航展门票开售监控（单次检查）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/airshow-monitor
+EnvironmentFile=-/opt/airshow-monitor/local.env
+ExecStart=/usr/bin/python3 /opt/airshow-monitor/monitor.py --once
+TimeoutStartSec=300
+```
+
+> `EnvironmentFile=` 前面那个 **减号**不能去掉：它表示「文件不存在也不算错」，
+> 否则你还没建 `local.env` 时服务会直接起不来。
+
+`/etc/systemd/system/airshow-monitor.timer`：
+
+```ini
+[Unit]
+Description=每 10 分钟检查一次珠海航展门票
+
+[Timer]
+OnBootSec=3min
+OnCalendar=*:0/10
+Persistent=true
+AccuracySec=30s
+RandomizedDelaySec=20
+
+[Install]
+WantedBy=timers.target
+```
+
+`Persistent=true` 保证服务器重启或休眠错过的班次会在开机后补跑一次；
+`RandomizedDelaySec` 是给目标站点留点余地，避免每次都掐着整点打。
+
+```bash
+ssh root@192.168.0.10 "systemctl daemon-reload && systemctl enable --now airshow-monitor.timer"
+```
+
+### 10.3 写凭据（**关键，别漏**）
+
+```bash
+ssh root@192.168.0.10 "cat > /opt/airshow-monitor/local.env" <<'EOF'
+PUSHPLUS_TOKEN=你的token
+EOF
+ssh root@192.168.0.10 "chmod 600 /opt/airshow-monitor/local.env"
+```
+
+写完立刻手动跑一次验证：
+
+```bash
+ssh root@192.168.0.10 "systemctl start airshow-monitor.service; journalctl -u airshow-monitor.service -n 15 --no-pager"
+```
+
+看到 `本轮完成：监控源 6 个，成功 6 个` 就是通了。
+
+### 10.4 以后更新代码
+
+在本地项目目录执行：
+
+```bash
+./deploy-server.sh            # 同步代码 + 语法自检
+./deploy-server.sh --restart  # 同步后立刻跑一次
+```
+
+它只覆盖代码，**不会动**服务器上的 `local.env`（凭据）和 `state/`（已看过的公告记录），
+所以反复部署不会导致重复推送。
+
+如果服务器地址或密钥不一样，用环境变量覆盖：
+
+```bash
+AIRSHOW_HOST=deploy@10.0.0.5 AIRSHOW_KEY=~/.ssh/id_ed25519 ./deploy-server.sh
+```
+
+### 10.5 日常查看
+
+```bash
+# 定时器下次什么时候跑
+ssh root@192.168.0.10 "systemctl list-timers airshow-monitor.timer"
+
+# 最近一次运行日志
+ssh root@192.168.0.10 "journalctl -u airshow-monitor.service -n 30 --no-pager"
+
+# 只看报错
+ssh root@192.168.0.10 "journalctl -u airshow-monitor.service -p err --no-pager | tail -20"
+```
+
+### 10.6 和 GitHub Actions 能同时开吗？
+
+**可以，但不建议。** 两边各有一份 `state/`，互不知情，同一则开售公告可能给你推两次。
+选一个就行：服务器稳，GitHub 免费且不用维护机器。
+
+如果两边都开着又不想重复推送，可以把其中一边的 `config.json` 里
+`notify.require_push_channel` 保持 `true`、但把推送通道换成一个不常用的（比如只留 Server酱），
+这样重复推送至少不会都堆在微信上。

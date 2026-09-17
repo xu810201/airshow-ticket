@@ -846,11 +846,20 @@ def run_once(cfg, *, dry_run=False, baseline=False) -> int:
             log(f"  ⚠️ {label}：{detail}", "WARN")
 
     if not ready:
+        # 提示信息要跟着运行环境走，否则在服务器上会给出让人莫名其妙的 GitHub 指引
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            fix_hint = ("  1) 到 GitHub 仓库 Settings → Secrets and variables → Actions 添加 "
+                        "PUSHPLUS_TOKEN（值填 PushPlus 的 token）；\n"
+                        "  2) 或在 config.json 的 push 里启用并填写任意一个通道的凭据。")
+            where = "GitHub 的失败提醒"
+        else:
+            fix_hint = ("  1) 把凭据写进本目录的 local.env，格式：PUSHPLUS_TOKEN=你的token\n"
+                        "     （服务器上即 /opt/airshow-monitor/local.env，写完执行 "
+                        "systemctl start airshow-monitor.service 立即验证）\n"
+                        "  2) 或 export 该环境变量 / 改 config.json 的 push 段。")
+            where = "systemd 的失败记录"
         msg = ("没有任何可用的推送通道，即使发现开售也无法通知到你。\n"
-               "  修复方式二选一：\n"
-               "  1) 到 GitHub 仓库 Settings → Secrets and variables → Actions 添加 "
-               "PUSHPLUS_TOKEN（值填 PushPlus 的 token）；\n"
-               "  2) 或在 config.json 的 push 里启用并填写任意一个通道的凭据。")
+               "  修复方式：\n" + fix_hint)
         log(msg, "ERROR")
         write_step_summary(
             "## ❌ 监控未生效：没有可用的推送通道\n\n"
@@ -873,8 +882,8 @@ def run_once(cfg, *, dry_run=False, baseline=False) -> int:
             if time.time() - last_warn > 86400:
                 state["push_warning_at"] = time.time()
                 save_state(state_path, state)
-                log("本次以失败退出，以便你收到 GitHub 的失败提醒。"
-                    "24 小时内不会重复变红，避免刷屏。", "ERROR")
+                log(f"本次以失败退出，以便你注意到这个问题（{where}）。"
+                    "24 小时内不会重复报错，避免刷屏。", "ERROR")
                 return 1
             log("24 小时内已就该问题提醒过，本次只记录日志、不让任务变红。", "WARN")
 
