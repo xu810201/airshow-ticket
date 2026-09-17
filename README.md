@@ -125,7 +125,8 @@
 {
   "notify": {
     "change_cooldown_minutes": 360,   // 普通提醒的冷却时间（分钟）
-    "max_push_per_run": 3             // 单轮最多推几条，防轰炸
+    "max_push_per_run": 3,            // 单轮最多推几条，防轰炸
+    "require_push_channel": true      // 没有任何可用推送通道时报错退出，避免“假装在跑”
   },
   "heartbeat": {
     "enabled": false,                 // 改成 true，每天 10:00 发一条“我还活着”
@@ -206,8 +207,14 @@ GitHub 有个规则：仓库 **60 天没有任何活动**，定时任务会被�
 **Q：为什么日志说「跳过：未配置」？**
 某个通道 `enabled: true` 但凭据是空的。要么填上凭据，要么把它改成 `false`。这不会影响其它通道。
 
-**Q：抓取失败了怎么办？**
-GitHub 的服务器在国外，访问国内站点偶尔会慢或超时。程序自带 3 次重试和指数退避；如果日志显示全部监控源都失败（此时任务会变红），在 `config.json` 的 `monitor.proxy` 里填一个代理地址即可。
+**Q：任务变红了，是坏了吗？**
+不一定是坏事，红色的含义只有两种，运行页面顶部的 **Summary** 会直接告诉你原因：
+
+- **❌ 监控未生效：没有可用的推送通道** —— 说明 `PUSHPLUS_TOKEN` 没配上或填错了。这是刻意设计的：宁可报错也不能让监控悄悄跑着却永远发不出通知。配好即恢复绿色。
+- **抓取失败** —— GitHub 服务器访问国内站点偶尔超时。程序自带 3 次重试；如果持续失败，在 `config.json` 的 `monitor.proxy` 里填代理。
+
+**Q：怎么看每次检查的结果？**
+不用翻日志。每次运行结束后，Actions 运行页面上会直接显示一张 **Job Summary** 表格，列出每个监控源的状态（✅ 无变化 / 📢 有更新 / 🚨 开售信号 / ❌ 抓取失败）、已记录的公告条数、以及推送通道是否就绪。
 
 ---
 
@@ -226,7 +233,7 @@ GitHub 的服务器在国外，访问国内站点偶尔会慢或超时。程序�
 | `monitor.py` | 主程序，抓取 + 判定 + 推送 |
 | `config.json` | 配置文件：监控源、关键词、推送通道 |
 | `selftest.py` | 判定逻辑自测，5 个场景，不联网 |
-| `.github/workflows/monitor.yml` | GitHub Actions 定时任务（每 10 分钟） |
+| `.github/workflows/monitor.yml` | GitHub Actions 定时任务（每 10 分钟）。用 `checkout@v7` / `setup-python@v7` / `cache@v6`，均为 Node 24 运行时，不会有弃用告警 |
 | `run-local.sh` | 本地运行脚本 |
 | `com.zhuhai.airshow.monitor.plist` | 可选的 macOS 本机定时任务 |
 | `state/` | 运行状态（已看过的公告和句子），已加入 .gitignore |

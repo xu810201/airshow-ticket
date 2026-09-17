@@ -38,7 +38,9 @@ def scenario(prev_pages, cur_pages):
             "monitor": {"state_file": os.path.join(d, "state.json"),
                         "timeout_seconds": 5, "retries": 1, "proxy": ""},
             "notify": {"title_prefix": "TEST", "max_push_per_run": 5,
-                       "change_cooldown_minutes": 0},
+                       "change_cooldown_minutes": 0,
+                       # 自测里推送是 mock 的，关掉“必须有可用通道”的检查
+                       "require_push_channel": False},
             "keywords": monitor.load_config(
                 os.path.join(monitor.BASE_DIR, "config.json"))["keywords"],
             "heartbeat": {"enabled": False},

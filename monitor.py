@@ -82,6 +82,28 @@ def vlog(msg: str) -> None:
         log(msg, "DEBUG")
 
 
+def mask_secret(v: str) -> str:
+    """只报告凭据是否存在和长度，绝不打印明文。"""
+    v = (v or "").strip()
+    if not v:
+        return "未设置"
+    if len(v) < 12:
+        return f"已设置，但只有 {len(v)} 字符 —— 长度偏短，很可能填错了"
+    return f"已设置（{len(v)} 字符，{v[:3]}***）"
+
+
+def write_step_summary(md: str) -> None:
+    """把结果写进 GitHub Actions 的 Job Summary，运行页面上直接可见，不用翻日志。"""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(md + "\n")
+    except Exception as e:
+        vlog(f"写 Job Summary 失败：{e}")
+
+
 # ---------------------------------------------------------------- 配置
 
 
@@ -471,6 +493,50 @@ CHANNEL_LABELS = {
     "webhook": "自定义 Webhook",
 }
 
+# 各通道的主凭据字段，用于预检时判断“启用了但没填凭据”
+CRED_FIELDS = {
+    "pushplus": "token",
+    "serverchan": "sendkey",
+    "bark": "key",
+    "dingtalk": "webhook",
+    "feishu": "webhook",
+    "wecom": "webhook",
+    "telegram": "bot_token",
+    "webhook": "url",
+}
+
+# 每个通道需要哪些环境变量，预检时提示用
+ENV_HINTS = {
+    "pushplus": "PUSHPLUS_TOKEN",
+    "serverchan": "SERVERCHAN_SENDKEY",
+    "bark": "BARK_KEY",
+    "dingtalk": "DINGTALK_WEBHOOK",
+    "feishu": "FEISHU_WEBHOOK",
+    "wecom": "WECOM_WEBHOOK",
+    "telegram": "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID",
+    "webhook": "CUSTOM_WEBHOOK",
+}
+
+
+def preflight(cfg) -> list:
+    """检查推送通道配置。返回 [(标签, 状态, 说明)]，状态 ∈ ready / unconfigured / disabled。"""
+    push_cfg = cfg.get("push") or {}
+    rows = []
+    for name in CHANNELS:
+        ch = push_cfg.get(name) or {}
+        label = CHANNEL_LABELS.get(name, name)
+        if not ch.get("enabled"):
+            rows.append((label, "disabled", ""))
+            continue
+        field = CRED_FIELDS.get(name, "")
+        val = (ch.get(field) or "").strip()
+        if not val:
+            rows.append((label, "unconfigured",
+                         f"未配置 —— 环境变量 {ENV_HINTS.get(name, field)} 为空"))
+        else:
+            rows.append((label, "ready", mask_secret(val)))
+    return rows
+
 
 def dispatch(cfg: dict, title: str, body: str, *, dry_run: bool = False):
     """向所有已启用通道推送。返回 [(通道名, 成功?, 详情)]"""
@@ -714,11 +780,87 @@ def check_source(src, cfg, state, baseline_mode):
     return alert, None
 
 
+def _build_summary(sources, state, errors, alerts, pushed, chan_rows, is_baseline) -> str:
+    """生成 GitHub Actions 的 Job Summary（Markdown），运行页面上直接可见。"""
+    err_names = set()
+    for e in errors:
+        err_names.add(e.split(" 抓取失败")[0].split(" 检查异常")[0])
+    level_by_key = {}
+    for a in alerts:
+        level_by_key[a["src"].get("id") or a["src"]["url"]] = a["level"]
+
+    lines = ["## 珠海航展门票监控 · 本轮结果", ""]
+    lines.append(f"- **时间**：{ts()}（北京时间）")
+    lines.append(f"- **监控源**：{len(sources) - len(errors)}/{len(sources)} 正常")
+    lines.append(f"- **告警**：{len(alerts)} 条，已推送 {pushed} 条")
+    if is_baseline:
+        lines.append("- **模式**：首次运行 / 基线，本次刻意不发告警")
+
+    lines += ["", "| 监控源 | 状态 | 已记录条目 |", "| --- | --- | --- |"]
+    for src in sources:
+        key = src.get("id") or src["url"]
+        st = state["sources"].get(key) or {}
+        if src["name"] in err_names:
+            status = "❌ 抓取失败"
+        elif level_by_key.get(key) == "critical":
+            status = "🚨 **开售信号**"
+        elif level_by_key.get(key) == "info":
+            status = "📢 有更新"
+        else:
+            status = "✅ 无变化"
+        lines.append(f"| {src['name']} | {status} | {len(st.get('items') or [])} |")
+
+    ready = [r for r in chan_rows if r[1] == "ready"]
+    unconf = [r for r in chan_rows if r[1] == "unconfigured"]
+    lines += ["", "### 推送通道", ""]
+    lines.append("已就绪：" + ("、".join(r[0] for r in ready) if ready else "**无**"))
+    if unconf:
+        lines.append("")
+        lines.append("启用了但缺凭据：" + "、".join(f"{r[0]}" for r in unconf))
+    return "\n".join(lines)
+
+
 def run_once(cfg, *, dry_run=False, baseline=False) -> int:
     net = cfg.get("monitor") or {}
     state_path = resolve_path(net.get("state_file", "state/state.json"))
     state = load_state(state_path)
     first_run = not os.path.exists(state_path)
+
+    # ---- 推送通道预检：没通道 = 监控白跑，必须让用户立刻看见
+    chan_rows = preflight(cfg)
+    ready = [r for r in chan_rows if r[1] == "ready"]
+    unconfigured = [r for r in chan_rows if r[1] == "unconfigured"]
+    log("推送通道检查：")
+    if not any(r[1] != "disabled" for r in chan_rows):
+        log("  ⚠️ 所有通道都是关闭状态（config.json 的 push 里没有 enabled=true）", "WARN")
+    for label, status, detail in chan_rows:
+        if status == "ready":
+            log(f"  ✅ {label}：{detail}")
+        elif status == "unconfigured":
+            log(f"  ⚠️ {label}：{detail}", "WARN")
+
+    if not ready:
+        msg = ("没有任何可用的推送通道，即使发现开售也无法通知到你。\n"
+               "  修复方式二选一：\n"
+               "  1) 到 GitHub 仓库 Settings → Secrets and variables → Actions 添加 "
+               "PUSHPLUS_TOKEN（值填 PushPlus 的 token）；\n"
+               "  2) 或在 config.json 的 push 里启用并填写任意一个通道的凭据。")
+        log(msg, "ERROR")
+        write_step_summary(
+            "## ❌ 监控未生效：没有可用的推送通道\n\n"
+            "即使现在门票开售，程序也无法通知你。\n\n"
+            "**修复方式（二选一）**\n\n"
+            "1. 到 `Settings → Secrets and variables → Actions` 添加名为 "
+            "`PUSHPLUS_TOKEN` 的 Secret，值填 PushPlus 的 token\n"
+            "2. 或修改 `config.json`，启用并填写任意一个通道的凭据\n\n"
+            "| 通道 | 状态 |\n| --- | --- |\n"
+            + "\n".join(f"| {l} | {d if s == 'unconfigured' else ('已就绪' if s == 'ready' else '未启用')} |"
+                        for l, s, d in chan_rows if s != "disabled")
+            + "\n"
+        )
+        if (cfg.get("notify") or {}).get("require_push_channel", True) and not dry_run:
+            return 1
+        log("（require_push_channel 为 false，继续检查页面但不推送）", "WARN")
 
     if baseline or first_run:
         log("=" * 62)
@@ -790,6 +932,9 @@ def run_once(cfg, *, dry_run=False, baseline=False) -> int:
         for e in errors:
             log(f"  ✗ {e}", "WARN")
 
+    write_step_summary(_build_summary(sources, state, errors, alerts, pushed,
+                                      chan_rows, baseline or first_run))
+
     # 全部源都失败 -> 返回非 0，让 GitHub Actions 变红，便于及时发现
     if len(errors) == len(sources):
         log("所有监控源都抓取失败，请检查网络 / 代理配置", "ERROR")
@@ -799,12 +944,35 @@ def run_once(cfg, *, dry_run=False, baseline=False) -> int:
 
 def test_push(cfg) -> int:
     prefix = (cfg.get("notify") or {}).get("title_prefix", "珠海航展")
+
+    # 先做预检，把“哪个通道缺什么”直接打在日志里
+    chan_rows = preflight(cfg)
+    ready = [r for r in chan_rows if r[1] == "ready"]
+    unconf = [r for r in chan_rows if r[1] == "unconfigured"]
+    log("推送通道检查：")
+    for label, status, detail in chan_rows:
+        if status == "ready":
+            log(f"  ✅ {label}：{detail}")
+        elif status == "unconfigured":
+            log(f"  ⚠️ {label}：{detail}", "WARN")
+    if not ready:
+        log("没有任何已就绪的推送通道，测试无法进行。\n"
+            "  到 GitHub 仓库 Settings → Secrets and variables → Actions 添加 "
+            "PUSHPLUS_TOKEN，或在 config.json 的 push 里填写任意一个通道的凭据。", "ERROR")
+        write_step_summary(
+            "## ❌ 测试推送失败：没有可用的推送通道\n\n"
+            + "\n".join(f"- **{l}**：{d}" for l, s, d in chan_rows if s == "unconfigured")
+            + "\n\n请到 `Settings → Secrets and variables → Actions` 添加 "
+              "`PUSHPLUS_TOKEN`（值填 PushPlus 的 token）。\n"
+        )
+        return 1
+
     body = (
         "**这是一条测试推送**\n\n"
         "如果你在手机上看到这条消息，说明推送通道已经打通 ✅\n\n"
         f"- 时间：{ts()}（北京时间）\n"
         "- 程序：2026 珠海航展门票开售监控\n"
-        "- 下一步：把它挂到 GitHub Actions 上，10 分钟检查一次\n"
+        "- 下一步：之后每 10 分钟自动检查一次，发现开售立刻通知你\n"
     )
     res = dispatch(cfg, f"✅ {prefix}监控 · 测试推送", body, dry_run=False)
     if not res:
@@ -812,7 +980,21 @@ def test_push(cfg) -> int:
         return 1
     ok = [r for r in res if r[1] is True]
     bad = [r for r in res if r[1] is False]
-    log(f"测试完成：成功 {len(ok)} 个，失败 {len(bad)} 个，跳过 {len(res) - len(ok) - len(bad)} 个")
+    log(f"测试完成：成功 {len(ok)} 个，失败 {len(bad)} 个，"
+        f"跳过 {len(res) - len(ok) - len(bad)} 个")
+
+    if ok:
+        write_step_summary(
+            "## ✅ 测试推送成功\n\n"
+            f"已发送到：{'、'.join(r[0] for r in ok)}\n\n"
+            "请检查手机是否收到消息。收到即表示监控链路已完全打通。\n"
+        )
+    else:
+        write_step_summary(
+            "## ❌ 测试推送失败\n\n"
+            + "\n".join(f"- **{r[0]}**：{r[2]}" for r in bad)
+            + "\n\n凭据已注入但发送被拒绝，通常是 token 填错或已失效。\n"
+        )
     return 0 if ok else 1
 
 

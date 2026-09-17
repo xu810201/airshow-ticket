@@ -26,17 +26,17 @@ jobs:
 
     steps:
       - name: 拉取代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 准备 Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
-          python-version: '3.12'
+          python-version: '3.13'
 
       # 状态文件记录“已经看过的公告和句子”，缓存起来才能跨轮次去重，
       # 否则每 10 分钟都会把同样的内容当成新消息重推一遍。
       - name: 恢复监控状态
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: state
           key: airshow-state-${{ github.run_id }}
