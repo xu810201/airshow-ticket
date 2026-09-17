@@ -858,9 +858,19 @@ def run_once(cfg, *, dry_run=False, baseline=False) -> int:
                         for l, s, d in chan_rows if s != "disabled")
             + "\n"
         )
-        if (cfg.get("notify") or {}).get("require_push_channel", True) and not dry_run:
-            return 1
-        log("（require_push_channel 为 false，继续检查页面但不推送）", "WARN")
+        if not (cfg.get("notify") or {}).get("require_push_channel", True) or dry_run:
+            log("（require_push_channel 为 false，继续检查页面但本轮不推送）", "WARN")
+        else:
+            # 让任务变红是为了让你注意到，但不能每 10 分钟红一次 —— 那样
+            # GitHub 的失败邮件会把你淹没。所以 24 小时内只红一次。
+            last_warn = float(state.get("push_warning_at") or 0)
+            if time.time() - last_warn > 86400:
+                state["push_warning_at"] = time.time()
+                save_state(state_path, state)
+                log("本次以失败退出，以便你收到 GitHub 的失败提醒。"
+                    "24 小时内不会重复变红，避免刷屏。", "ERROR")
+                return 1
+            log("24 小时内已就该问题提醒过，本次只记录日志、不让任务变红。", "WARN")
 
     if baseline or first_run:
         log("=" * 62)
