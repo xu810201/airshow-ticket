@@ -1,0 +1,13 @@
+# 运行状态（不要提交，本地/云端各自维护）
+state/*.json
+state/*.log
+state/*.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# macOS
+.DS_Store

@@ -1,0 +1,161 @@
+{
+  // ===================================================================
+  // 2026 珠海航展（第十六届中国航展）普通观众门票开售监控 · 配置文件
+  // 支持整行 // 注释。${XXX} 会被替换成同名环境变量（GitHub Secrets 用这个）。
+  // ===================================================================
+
+  "monitor": {
+    "timeout_seconds": 25,
+    "retries": 3,
+    // 如果 GitHub Actions 所在机房访问国内站点慢/不通，可填代理，例如 "http://1.2.3.4:8080"
+    "proxy": "",
+    // 极少数国内站点证书链不完整，实在抓不动时可临时设为 true
+    "insecure_ssl": false,
+    "state_file": "state/state.json",
+    // 留空则不写日志文件；本地长期运行可改成 "state/monitor.log"
+    "log_file": ""
+  },
+
+  "notify": {
+    "title_prefix": "珠海航展",
+    "critical_title": "🚨 珠海航展门票开售信号！",
+    "info_title": "📢 航展官网有更新",
+    // info 级（页面有更新但没命中开售关键词）的同一来源冷却时间，防止刷屏
+    "change_cooldown_minutes": 360,
+    // 单轮最多推几条，避免一次性轰炸
+    "max_push_per_run": 3
+  },
+
+  // 每天固定时间发一条“我还活着”，方便确认监控没挂（默认关闭）
+  "heartbeat": {
+    "enabled": false,
+    "hour_cst": 10
+  },
+
+  // ---------------------------------------------------------------
+  // 推送通道：enabled=true 且凭据不为空才会发。
+  // 建议至少启用一个微信通道：PushPlus 或 Server酱。
+  // ---------------------------------------------------------------
+  "push": {
+    // 【推荐】PushPlus，微信收消息，免费版每天 200 条
+    // 获取 token：https://www.pushplus.plus/ 微信扫码登录 -> 一对一推送 -> 复制 token
+    "pushplus": {
+      "enabled": true,
+      "token": "${PUSHPLUS_TOKEN}"
+    },
+
+    // Server酱³，微信收消息。注意免费版每天条数有限（约 5 条），
+    // 不建议和 PushPlus 同时开，除非你确认够用。
+    // 获取 SendKey：https://sct.ftqq.com/ 微信扫码登录 -> SendKey
+    "serverchan": {
+      "enabled": false,
+      "sendkey": "${SERVERCHAN_SENDKEY}"
+    },
+
+    // iPhone 用户可加这个，免费、无延迟、最稳
+    // 装 Bark App -> 首页复制那串 Key
+    "bark": {
+      "enabled": false,
+      "key": "${BARK_KEY}",
+      "server": "https://api.day.app",
+      "group": "航展门票"
+    },
+
+    "dingtalk": { "enabled": false, "webhook": "${DINGTALK_WEBHOOK}" },
+    "feishu":   { "enabled": false, "webhook": "${FEISHU_WEBHOOK}" },
+    "wecom":    { "enabled": false, "webhook": "${WECOM_WEBHOOK}" },
+
+    "telegram": {
+      "enabled": false,
+      "bot_token": "${TELEGRAM_BOT_TOKEN}",
+      "chat_id": "${TELEGRAM_CHAT_ID}"
+    },
+
+    // 想转发到自己的服务（比如自建通知服务、n8n、IFTTT）用这个
+    "webhook": { "enabled": false, "url": "${CUSTOM_WEBHOOK}" }
+  },
+
+  // ---------------------------------------------------------------
+  // 关键词：判定“是否已开售”的核心规则
+  //   positive    —— 出现即视为开售信号（除非同一句里有 negative）
+  //   negative    —— 否定词，用于排除“暂未开售 / 官方辟谣”这类句子
+  //   ticket_title—— 新增公告标题里出现这些词，直接判为最高级告警
+  // 注意：这里刻意不放“购票”“购票须知”这类中性词，否则页面常驻的
+  //      导航文字会天天误报。
+  // ---------------------------------------------------------------
+  "keywords": {
+    "positive": [
+      "开售", "开票", "开卖", "开始售票", "正式售票", "开始发售", "公开发售",
+      "售票时间", "售票通道", "售票渠道", "售票公告", "门票销售", "门票发售",
+      "购票通道", "购票入口", "购票平台", "购票渠道", "购票链接",
+      "开启预售", "预售开启", "预售通道",
+      "票务方案", "票务公告", "票价公布", "票价标准", "门票价格",
+      "官方售票", "官方购票", "购票正式启动"
+    ],
+    "negative": [
+      "暂未开售", "尚未开售", "未开售", "暂不开售", "暂未售票", "尚未售票",
+      "暂未启动", "尚未启动", "暂未发布", "尚未发布", "暂未公布", "尚未公布",
+      "暂未开放", "尚未开放", "暂未开通", "均未对外发布", "均不实", "不实",
+      "辟谣", "虚假", "谨防", "切勿轻信", "警惕", "黄牛", "诈骗"
+    ],
+    "ticket_title": [
+      "门票", "票务", "购票", "售票", "开售", "票价", "预售", "抢票"
+    ]
+  },
+
+  // ---------------------------------------------------------------
+  // 监控源
+  //   item_url_pattern —— 只把匹配这个正则的链接当作“公告条目”，
+  //                      用于精确识别新增公告（官网是 /Item/12345.aspx）
+  //   keyword_scan     —— 是否参与关键词判定
+  //   notify_on_change —— 没命中关键词、只是页面有变化时，是否也推一条
+  // ---------------------------------------------------------------
+  "sources": [
+    {
+      "id": "official_notice",
+      "name": "官网公告栏",
+      "url": "https://www.airshow.com.cn/Category_128/Index.aspx",
+      "item_url_pattern": "/Item/",
+      "notify_on_change": true,
+      "enabled": true
+    },
+    {
+      "id": "official_ticket_info",
+      "name": "官网门票信息页",
+      "url": "https://www.airshow.com.cn/Category_1205/Index.aspx",
+      "notify_on_change": true,
+      "enabled": true
+    },
+    {
+      "id": "official_home",
+      "name": "官网首页",
+      "url": "https://www.airshow.com.cn/",
+      "item_url_pattern": "/Item/",
+      "notify_on_change": true,
+      "enabled": true
+    },
+    {
+      "id": "official_news",
+      "name": "官网新闻媒体",
+      "url": "https://www.airshow.com.cn/Category_1132/Index.aspx",
+      "item_url_pattern": "/Item/",
+      "notify_on_change": true,
+      "enabled": true
+    },
+    {
+      "id": "official_ticket_site",
+      "name": "官方票务站",
+      "url": "https://piao.airshow.com.cn/",
+      "notify_on_change": true,
+      "enabled": true
+    },
+    {
+      "id": "bendibao",
+      "name": "珠海本地宝（聚合）",
+      "url": "https://m.zh.bendibao.com/xiuxian/104873.shtm",
+      "notify_on_change": true,
+      "keyword_scan": false,
+      "enabled": true
+    }
+  ]
+}

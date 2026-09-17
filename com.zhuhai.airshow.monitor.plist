@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  可选的本地定时任务（macOS launchd），作为 GitHub Actions 之外的备份。
+  默认没有启用。启用方法：
+    1. 把下面所有 /Users/macos/... 路径改成你自己机器上的真实路径
+    2. cp com.zhuhai.airshow.monitor.plist ~/Library/LaunchAgents/
+    3. launchctl load ~/Library/LaunchAgents/com.zhuhai.airshow.monitor.plist
+  停止：
+    launchctl unload ~/Library/LaunchAgents/com.zhuhai.airshow.monitor.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.zhuhai.airshow.monitor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/macos/WorkBuddy AI/2026-09-17-15-01-19/zhuhai-airshow-ticket-monitor/monitor.py</string>
+        <string>--once</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/macos/WorkBuddy AI/2026-09-17-15-01-19/zhuhai-airshow-ticket-monitor</string>
+
+    <!-- 每 600 秒（10 分钟）跑一次 -->
+    <key>StartInterval</key>
+    <integer>600</integer>
+
+    <!-- 登录后立刻先跑一次 -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/macos/WorkBuddy AI/2026-09-17-15-01-19/zhuhai-airshow-ticket-monitor/state/launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/macos/WorkBuddy AI/2026-09-17-15-01-19/zhuhai-airshow-ticket-monitor/state/launchd.err.log</string>
+</dict>
+</plist>
