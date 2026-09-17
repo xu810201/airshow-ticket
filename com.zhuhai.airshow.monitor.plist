@@ -1,13 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  可选的本地定时任务（macOS launchd），作为 GitHub Actions 之外的备份。
-  默认没有启用。启用方法：
-    1. 把下面所有 /Users/macos/... 路径改成你自己机器上的真实路径
-    2. cp com.zhuhai.airshow.monitor.plist ~/Library/LaunchAgents/
-    3. launchctl load ~/Library/LaunchAgents/com.zhuhai.airshow.monitor.plist
-  停止：
+  macOS 本机定时任务（launchd）—— 当 GitHub Actions 的定时触发不可用时的兜底方案。
+
+  它会每 600 秒（10 分钟）调用一次 run-local.sh，凭据从同目录的 local.env 读取。
+
+  安装：
+    cp com.zhuhai.airshow.monitor.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.zhuhai.airshow.monitor.plist
+
+  查看状态 / 停止：
+    launchctl list | grep airshow
     launchctl unload ~/Library/LaunchAgents/com.zhuhai.airshow.monitor.plist
+
+  注意：本机休眠或关机期间不会执行；唤醒后 launchd 会补跑一次。
+  如果换过目录，记得同步修改下面的路径。
 -->
 <plist version="1.0">
 <dict>
@@ -16,8 +23,8 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>/Users/macos/WorkBuddy AI/2026-09-17-15-01-19/zhuhai-airshow-ticket-monitor/monitor.py</string>
+        <string>/bin/bash</string>
+        <string>/Users/macos/WorkBuddy AI/2026-09-17-15-01-19/zhuhai-airshow-ticket-monitor/run-local.sh</string>
         <string>--once</string>
     </array>
 
@@ -28,7 +35,7 @@
     <key>StartInterval</key>
     <integer>600</integer>
 
-    <!-- 登录后立刻先跑一次 -->
+    <!-- 加载后立刻先跑一次 -->
     <key>RunAtLoad</key>
     <true/>
 

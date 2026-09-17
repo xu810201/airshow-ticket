@@ -2,6 +2,10 @@
 state/*.json
 state/*.log
 state/*.tmp
+state/*.err.log
+
+# 本地凭据（PushPlus token 等），绝不提交
+local.env
 
 # Python
 __pycache__/
