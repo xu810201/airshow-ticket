@@ -172,12 +172,21 @@
 
 ```bash
 cd zhuhai-airshow-ticket-monitor
-./run-local.sh --test-push     # 先测推送能不能收到
+python3 check-push.py          # 【首选】本地秒级诊断 token 是否有效，不经过 GitHub
+./run-local.sh --test-push     # 测推送能不能收到（需要先 export PUSHPLUS_TOKEN）
 ./run-local.sh                 # 检查一轮
 ./run-local.sh --dry-run -v    # 只看结果不推送，带详细日志
 ./run-local.sh --reset         # 清空状态，重新建立基线
 python3 selftest.py            # 跑判定逻辑自测（不联网）
 ```
+
+**推送失败时的排查顺序**：先跑 `python3 check-push.py`。它会把 token 直接发给 PushPlus 官方接口，
+几秒钟告诉你到底是哪一类问题——比在 GitHub 上来回试快得多：
+
+| 返回 | 含义 | 怎么办 |
+| --- | --- | --- |
+| `code 200` | token 有效，请求已受理 | 若微信没收到，检查是否已关注「pushplus 推送加」公众号 |
+| `code 903 用户令牌不正确` | token 值无效或已失效 | 到 pushplus.plus 重新复制「一对一推送」的 token |
 
 想在本机常驻，用附带的 launchd 配置（把里面的路径改成你的真实路径）：
 
@@ -233,6 +242,7 @@ GitHub 有个规则：仓库 **60 天没有任何活动**，定时任务会被�
 | `monitor.py` | 主程序，抓取 + 判定 + 推送 |
 | `config.json` | 配置文件：监控源、关键词、推送通道 |
 | `selftest.py` | 判定逻辑自测，5 个场景，不联网 |
+| `check-push.py` | PushPlus token 本地诊断，秒级定位推送失败原因 |
 | `.github/workflows/monitor.yml` | GitHub Actions 定时任务（每 10 分钟）。用 `checkout@v7` / `setup-python@v7` / `cache@v6`，均为 Node 24 运行时，不会有弃用告警 |
 | `run-local.sh` | 本地运行脚本 |
 | `com.zhuhai.airshow.monitor.plist` | 可选的 macOS 本机定时任务 |

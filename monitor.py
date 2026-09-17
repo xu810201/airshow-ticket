@@ -347,9 +347,13 @@ def send_pushplus(cfg, title, body, **kw):
     )
     try:
         j = json.loads(text)
-        if int(j.get("code", -1)) == 200:
+        code = j.get("code")
+        if int(code if code is not None else -1) == 200:
             return True, "OK"
-        return False, f"code={j.get('code')} msg={j.get('msg')}"
+        msg = j.get("msg") or j.get("data") or ""
+        if int(code if code is not None else -1) == 903:
+            msg = f"{msg} —— token 无效或已失效，请到 pushplus.plus 重新复制「一对一推送」的 token"
+        return False, f"code={code} msg={msg}"
     except Exception:
         return status == 200, f"HTTP {status} {text[:140]}"
 
