@@ -31,7 +31,7 @@
 
 ---
 
-## 二、3 分钟上手
+## 二、快速上手
 
 ### 第 1 步：拿到微信推送的 token（约 1 分钟）
 
@@ -79,6 +79,80 @@
 4. 等十几秒，**手机上应该收到一条测试消息** ✅
 
 收到测试消息就说明全线打通了。之后它每 10 分钟自动跑一次，你什么都不用管。
+
+### 第 5 步：配置定时触发（**必做**，别跳过）
+
+⚠️ **GitHub 自带的 `schedule` 定时器并不可靠**——尤其在新建仓库上。本项目实测：
+仓库建好后近 4 小时、20 多次 cron 机会**一次都没触发**，而手动运行完全正常。
+这不是配置错误，是 GitHub 侧的问题（新仓库的 schedule 注册可能长期不生效）。
+
+所以用**外部 cron 服务**来定时调用 GitHub 的接口，这才是可靠的方案。
+
+#### 5.1 创建一个 PAT（个人访问令牌）
+
+1. 打开 <https://github.com/settings/personal-access-tokens/new>
+2. **Token name** 填 `airshow-monitor-cron`
+3. **Expiration** 选 90 天或更长（过期后定时任务会失败，记得续期）
+4. **Repository access** → 选 **Only select repositories** → 勾上 `xu810201/airshow-ticket`
+5. **Permissions** → 展开 **Repository permissions** → 找到 **Actions** → 设为 **Read and write**
+6. 点 **Generate token**，复制那串 `github_pat_...`（**离开页面就再也看不到了**）
+
+#### 5.2 先本地验证 PAT 能用
+
+```bash
+cd zhuhai-airshow-ticket-monitor
+python3 trigger-workflow.py
+```
+
+粘贴 PAT（不回显），它会明确告诉你结果：
+
+| 输出 | 含义 |
+| --- | --- |
+| `✅ 成功（GitHub 返回 204）` + 新运行号 | PAT 可用，继续下一步 |
+| `❌ 403 权限不足` | Actions 权限没设成 Read and write |
+| `❌ 404 找不到` | PAT 没授权访问这个仓库 |
+| `❌ 401 未认证` | PAT 复制错了或已过期 |
+
+#### 5.3 在 cron-job.org 建任务
+
+1. 注册 <https://cron-job.org/>（免费，需邮箱验证）
+2. **Console** → **Create cronjob**
+3. 按下表填：
+
+| 字段 | 填什么 |
+| --- | --- |
+| **Title** | 珠海航展门票监控 |
+| **URL** | `https://api.github.com/repos/xu810201/airshow-ticket/actions/workflows/monitor.yml/dispatches` |
+| **Schedule** | Every 10 minutes（免费版最小可到 1 分钟） |
+| **Request method** | **POST** |
+| **Request body** | `{"ref":"main"}` |
+
+4. 再添加 **3 个自定义请求头**（点 **Add header**）：
+
+| Header | Value |
+| --- | --- |
+| `Authorization` | `Bearer 你的PAT` |
+| `Accept` | `application/vnd.github+json` |
+| `Content-Type` | `application/json` |
+
+5. 保存，**并勾选失败邮件通知**（Enable e-mail notification on failure）
+
+> ⚠️ **两个必须知道的坑**
+> - cron-job.org 对**连续失败 25 次的任务会自动停用**。PAT 过期、仓库改名都会导致失败，
+>   所以失败邮件通知一定要开，否则任务停了你还不知道。
+> - 它不支持自定义 `User-Agent` 和 `Connection` 请求头，会自动忽略——不影响本任务。
+
+#### 5.4 验证
+
+等 10 分钟，打开 <https://github.com/xu810201/airshow-ticket/actions>，
+运行记录里应该多出一条（事件类型是 `workflow_dispatch`，因为是走 API 触发的）。
+之后每 10 分钟就会自动多一条。
+
+确认正常后，可以把诊断用的 `cron-test.yml` 删掉：
+
+```bash
+git rm .github/workflows/cron-test.yml && git commit -m "移除诊断工作流" && git push
+```
 
 ---
 
@@ -206,8 +280,14 @@ launchctl load ~/Library/LaunchAgents/com.zhuhai.airshow.monitor.plist
 
 ## 七、常见问题
 
+**Q：GitHub 自带的定时任务根本没跑起来？**
+**这是已知问题，直接用外部 cron 兜底，见「第 5 步：配置定时触发」。** 实测新建仓库近 4 小时、20 多次
+cron 机会一次都没触发，而手动运行完全正常——排查过仓库可见性、fork 状态、工作流 state、账号年龄、
+默认分支、Actions 页面告警，全部正常，就是 GitHub 侧不触发。外部 cron 服务没有这个问题。
+
 **Q：GitHub 定时任务准吗？**
-免费版的 cron 在高峰期可能延迟几分钟到十几分钟，这是 GitHub 的调度特性，不是程序问题。对「提前知道开售」这个目标完全够用。想更准可以用 [cron-job.org](https://cron-job.org/) 之类的免费服务，定时去调 GitHub 的 `workflow_dispatch` 接口触发。
+免费版的 cron 在高峰期可能延迟几分钟到十几分钟，这是 GitHub 的调度特性，不是程序问题。
+用外部 cron 服务（第 5 步）可以规避。
 
 **Q：会不会过一阵子自己停了？**
 GitHub 有个规则：仓库 **60 天没有任何活动**，定时任务会被自动停用，并给你发邮件。收到邮件点一下启用就行；或者随便提交一次改动。本项目持续到 12 月，期间正常不会触发。
@@ -253,8 +333,11 @@ GitHub 有个规则：仓库 **60 天没有任何活动**，定时任务会被�
 | `config.json` | 配置文件：监控源、关键词、推送通道 |
 | `selftest.py` | 判定逻辑自测，5 个场景，不联网 |
 | `check-push.py` | PushPlus token 本地诊断，秒级定位推送失败原因 |
+| `trigger-workflow.py` | 验证 PAT 并触发云端工作流（外部 cron 兜底方案配套） |
 | `.github/workflows/monitor.yml` | GitHub Actions 定时任务（每 10 分钟）。用 `checkout@v7` / `setup-python@v7` / `cache@v6`，均为 Node 24 运行时，不会有弃用告警 |
-| `run-local.sh` | 本地运行脚本 |
-| `com.zhuhai.airshow.monitor.plist` | 可选的 macOS 本机定时任务 |
+| `.github/workflows/cron-test.yml` | 诊断用：验证 GitHub 的 `schedule` 触发器到底会不会响，确认后可删 |
+| `run-local.sh` | 本地运行脚本，自动读取同目录的 `local.env` 获取凭据 |
+| `com.zhuhai.airshow.monitor.plist` | 可选的 macOS 本机定时任务（另一种兜底） |
+| `local.env` | 本机凭据（`PUSHPLUS_TOKEN=...`），已 gitignore，不会提交 |
 | `state/` | 运行状态（已看过的公告和句子），已加入 .gitignore |
 | `requirements.txt` | 空的——本项目零依赖 |
