@@ -352,7 +352,9 @@ def send_pushplus(cfg, title, body, **kw):
             return True, "OK"
         msg = j.get("msg") or j.get("data") or ""
         if int(code if code is not None else -1) == 903:
-            msg = f"{msg} —— token 无效或已失效，请到 pushplus.plus 重新复制「一对一推送」的 token"
+            msg = (f"{msg} —— 通常是账号未实名认证（PushPlus 要求实名后才能发消息，"
+                   f"但报错会误导成令牌不正确），其次才是 token 复制错误；"
+                   f"请到 pushplus.plus 个人中心检查")
         return False, f"code={code} msg={msg}"
     except Exception:
         return status == 200, f"HTTP {status} {text[:140]}"

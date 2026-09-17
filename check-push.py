@@ -95,8 +95,13 @@ def main() -> int:
         return 0
 
     print(f"  ❌ token 被 PushPlus 拒绝：code={code} msg={j.get('msg')}")
-    print("     → 这个 token 无效或已失效。")
-    print("     → 到 https://www.pushplus.plus/ 微信扫码登录，重新复制『一对一推送』的 token。")
+    print()
+    print("     常见原因有两个（按可能性排序）：")
+    print("     1) 账号未实名认证 —— PushPlus 要求实名后才能发消息，")
+    print("        但报错文案会误导成『令牌不正确』。")
+    print("        到 https://www.pushplus.plus/ 登录后，在个人中心完成实名认证。")
+    print("     2) token 复制错了 —— 重新复制『一对一推送』那串 token，")
+    print("        注意别把『群组编码』或页面 URL 当成 token。")
     return 1
 
 
