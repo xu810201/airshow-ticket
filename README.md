@@ -341,6 +341,7 @@ GitHub 有个规则：仓库 **60 天没有任何活动**，定时任务会被�
 | `.github/workflows/cron-test.yml` | 诊断用：验证 GitHub 的 `schedule` 触发器到底会不会响，确认后可删 |
 | `run-local.sh` | 本地运行脚本，自动读取同目录的 `local.env` 获取凭据 |
 | `deploy-server.sh` | 一条命令把最新代码同步到 Linux 服务器（`/opt/airshow-monitor`），并做语法自检 |
+| `set-token.sh` | 把 PushPlus token 安全写入服务器 `local.env` 并立即验证（输入不回显） |
 | `com.zhuhai.airshow.monitor.plist` | 可选的 macOS 本机定时任务（另一种兜底） |
 | `local.env` | 本机凭据（`PUSHPLUS_TOKEN=...`），已 gitignore，不会提交 |
 | `state/` | 运行状态（已看过的公告和句子），已加入 .gitignore |
@@ -416,6 +417,18 @@ ssh root@192.168.0.10 "systemctl daemon-reload && systemctl enable --now airshow
 
 ### 10.3 写凭据（**关键，别漏**）
 
+最省事的方式是在本地项目目录执行：
+
+```bash
+./set-token.sh
+```
+
+它会提示你粘贴 token（**输入时不回显**，也不经过命令行参数），自动去掉复制时多带的空格/换行，
+写到服务器的 `local.env` 并把权限设成 600，然后**立刻在服务器上验证**——
+验证通过才会触发一次完整检查，并给你微信发一条测试消息。
+
+也可以手动写：
+
 ```bash
 ssh root@192.168.0.10 "cat > /opt/airshow-monitor/local.env" <<'EOF'
 PUSHPLUS_TOKEN=你的token
@@ -430,6 +443,10 @@ ssh root@192.168.0.10 "systemctl start airshow-monitor.service; journalctl -u ai
 ```
 
 看到 `本轮完成：监控源 6 个，成功 6 个` 就是通了。
+
+> 如果日志里出现 `⚠️ PushPlus（微信）：未配置 —— 环境变量 PUSHPLUS_TOKEN 为空`，
+> 说明这一步还没做。程序发现「没有任何推送通道」时会明确报错，
+> 但同一条提醒 **24 小时内只报一次**，避免每 10 分钟刷一条。
 
 ### 10.4 以后更新代码
 

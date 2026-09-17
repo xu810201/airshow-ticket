@@ -9,6 +9,7 @@ PushPlus token 本地诊断 —— 不经过 GitHub，几秒钟出结果。
 用法：
     python3 check-push.py            # 交互式输入 token，输入时不回显
     python3 check-push.py <token>    # 直接传参（会留在 shell 历史里，不推荐）
+    printf '%s' "$PUSHPLUS_TOKEN" | python3 check-push.py   # 从管道读（服务器上推荐）
 
 注意：本脚本只把你的 token 发往 PushPlus 官方接口做验证，不写任何文件、不上传别处。
 """
@@ -22,11 +23,17 @@ import urllib.request
 SEND_URL = "https://www.pushplus.plus/send"
 
 
-def main() -> int:
+def read_token() -> str:
+    """按「命令行参数 → 管道 → 交互输入」的优先级取 token。"""
     if len(sys.argv) > 1:
-        token = sys.argv[1].strip()
-    else:
-        token = getpass.getpass("粘贴 PushPlus token（输入时不显示，回车确认）：").strip()
+        return sys.argv[1].strip()
+    if not sys.stdin.isatty():
+        return sys.stdin.read().strip()
+    return getpass.getpass("粘贴 PushPlus token（输入时不显示，回车确认）：").strip()
+
+
+def main() -> int:
+    token = read_token()
 
     if not token:
         print("❌ 没有输入 token")
