@@ -126,6 +126,9 @@
       "id": "official_ticket_info",
       "name": "官网门票信息页",
       "url": "https://www.airshow.com.cn/Category_1205/Index.aspx",
+      // 这个页面没有公告列表，全是导航和备案链接。不设正则的话，
+      // 「珠海航展集团有限公司」「粤ICP备05081894号」这类导航项会被当成“新增公告”。
+      "item_url_pattern": "/Item/",
       "notify_on_change": true,
       "enabled": true
     },
@@ -156,6 +159,10 @@
       "id": "bendibao",
       "name": "珠海本地宝（聚合）",
       "url": "https://m.zh.bendibao.com/xiuxian/104873.shtm",
+      // 真实文章都是 /数字.shtm，导航项是 /栏目名/ 这种目录式链接。
+      // 不加这个正则的话，「第十六届中国航展门票」这个栏目入口会被当成
+      // “新增票务公告”，直接触发最高级告警（实测已误报过两次）。
+      "item_url_pattern": "\\.shtm$",
       "notify_on_change": true,
       "keyword_scan": false,
       "enabled": true

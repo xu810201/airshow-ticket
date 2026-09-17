@@ -700,15 +700,25 @@ def check_source(src, cfg, state, baseline_mode):
     sentences = split_sentences(text)
     # 去重并截断，避免状态文件膨胀
     uniq_sentences = list(dict.fromkeys(sentences))[:600]
+    # 句子比对同样要抹掉日期/时间，否则页面上的日期刷新就会被当成「新增内容」
+    # （正文 hash 已经归一化过，这里如果不对齐，两处判定会互相打架）
+    uniq_sent_keys = [normalize_text(s) for s in uniq_sentences]
 
     prev = (state["sources"] or {}).get(key) or {}
     is_baseline = baseline_mode or (key not in (state["sources"] or {}))
 
+    # 条目标题里常带发布日期（如「…最新消息\r\n 2026-09-11」），日期一变标题就变，
+    # 会被误判成「新增公告」并反复告警。比对和去重签名统一用归一化后的标题，
+    # 推送内容里仍然显示原始标题。
+    for it in items:
+        it["key"] = normalize_text(it["title"])
+
     prev_titles = set(prev.get("items") or [])
     prev_sentences = set(prev.get("sentences") or [])
 
-    new_items = [] if is_baseline else [it for it in items if it["title"] not in prev_titles]
-    new_sentences = [] if is_baseline else [s for s in uniq_sentences if s not in prev_sentences]
+    new_items = [] if is_baseline else [it for it in items if it["key"] not in prev_titles]
+    new_sentences = [] if is_baseline else [
+        s for s, k in zip(uniq_sentences, uniq_sent_keys) if k not in prev_sentences]
 
     # 部分源（如第三方聚合页）长期挂着固定的“购票渠道”文案，做关键词判定会误报，
     # 这类源用 keyword_scan=false 关掉关键词，只看“新增条目 / 内容变化”。
@@ -744,8 +754,8 @@ def check_source(src, cfg, state, baseline_mode):
     state["sources"][key] = {
         "name": src["name"],
         "hash": digest,
-        "items": [it["title"] for it in items][:200],
-        "sentences": uniq_sentences,
+        "items": [it["key"] for it in items][:200],
+        "sentences": uniq_sent_keys,
         "checked_at": ts(),
     }
 
@@ -758,8 +768,15 @@ def check_source(src, cfg, state, baseline_mode):
         return None, None
 
     # ---- 去重 / 冷却
-    sig_src = "|".join(sorted(it["title"] for it in new_items)) or "|".join(new_sentences[:5])
-    sig = f"{key}|{level}|{sha1(sig_src if level == 'info' else text_norm)[:16]}"
+    # 签名只能由「本次告警的证据」决定，不能用整页正文的 hash：
+    # 聚合类页面的正文会频繁变动（推荐位轮换、CDN 缓存切换），
+    # 拿整页 hash 当签名，同一条误报会反复突破去重、反复推送。
+    sig_parts = sorted(it["key"] for it in new_items)
+    sig_parts += sorted(h["sentence"] for h in strong_hits)
+    if not sig_parts:
+        sig_parts = new_sentences[:5]
+    sig_src = "|".join(sig_parts)
+    sig = f"{key}|{level}|{sha1(sig_src)[:16]}"
     sent = state["sent"]
     now_ts = time.time()
     if sig in sent:
@@ -845,6 +862,10 @@ def run_once(cfg, *, dry_run=False, baseline=False) -> int:
         elif status == "unconfigured":
             log(f"  ⚠️ {label}：{detail}", "WARN")
 
+    # 没通道时的失败要「推迟到检查结束再退出」：如果立刻 return，
+    # 状态文件就不会更新，等用户补上 token 后，积压了几天的变化会被一次性
+    # 当成新公告推出来。所以先照常抓取、照常更新状态，最后再让任务变红。
+    push_blocked = False
     if not ready:
         # 提示信息要跟着运行环境走，否则在服务器上会给出让人莫名其妙的 GitHub 指引
         if os.environ.get("GITHUB_ACTIONS") == "true":
@@ -881,11 +902,11 @@ def run_once(cfg, *, dry_run=False, baseline=False) -> int:
             last_warn = float(state.get("push_warning_at") or 0)
             if time.time() - last_warn > 86400:
                 state["push_warning_at"] = time.time()
-                save_state(state_path, state)
-                log(f"本次以失败退出，以便你注意到这个问题（{where}）。"
-                    "24 小时内不会重复报错，避免刷屏。", "ERROR")
-                return 1
-            log("24 小时内已就该问题提醒过，本次只记录日志、不让任务变红。", "WARN")
+                push_blocked = True
+                log(f"检查结束后本次会以失败退出，以便你注意到这个问题（{where}）。"
+                    f"24 小时内不会重复报错，避免刷屏。", "ERROR")
+            else:
+                log("24 小时内已就该问题提醒过，本次只记录日志、不让任务变红。", "WARN")
 
     if baseline or first_run:
         log("=" * 62)
@@ -963,6 +984,9 @@ def run_once(cfg, *, dry_run=False, baseline=False) -> int:
     # 全部源都失败 -> 返回非 0，让 GitHub Actions 变红，便于及时发现
     if len(errors) == len(sources):
         log("所有监控源都抓取失败，请检查网络 / 代理配置", "ERROR")
+        return 1
+    if push_blocked:
+        log("本轮以失败退出：没有可用的推送通道（详见上面的修复方式）", "ERROR")
         return 1
     return 0
 

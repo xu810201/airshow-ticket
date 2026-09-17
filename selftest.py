@@ -31,9 +31,13 @@ def fake_dispatch(cfg, title, body, **kw):
     return [("mock", True, "OK")]
 
 
-def scenario(prev_pages, cur_pages):
+def scenario(prev_pages, cur_pages, src_extra=None):
     """先用 prev_pages 建基线，再用 cur_pages 跑一轮，返回捕获到的推送。"""
     with tempfile.TemporaryDirectory() as d:
+        src = {"id": "t", "name": "测试源", "url": "https://example.com/a",
+               "item_url_pattern": "/Item/", "notify_on_change": True,
+               "enabled": True}
+        src.update(src_extra or {})
         cfg = {
             "monitor": {"state_file": os.path.join(d, "state.json"),
                         "timeout_seconds": 5, "retries": 1, "proxy": ""},
@@ -45,9 +49,7 @@ def scenario(prev_pages, cur_pages):
                 os.path.join(monitor.BASE_DIR, "config.json"))["keywords"],
             "heartbeat": {"enabled": False},
             "push": {},
-            "sources": [{"id": "t", "name": "测试源", "url": "https://example.com/a",
-                         "item_url_pattern": "/Item/", "notify_on_change": True,
-                         "enabled": True}],
+            "sources": [src],
         }
         PAGES.clear()
         PAGES.update(prev_pages)
@@ -72,8 +74,8 @@ URL = "https://example.com/a"
 CASES = []
 
 
-def case(name, prev, cur, expect_critical):
-    CASES.append((name, {URL: prev}, {URL: cur}, expect_critical))
+def case(name, prev, cur, expect_critical, src_extra=None):
+    CASES.append((name, {URL: prev}, {URL: cur}, expect_critical, src_extra))
 
 
 # 1. 仍是“暂未开售”，只改了日期 —— 不应误报为开售
@@ -104,14 +106,46 @@ case("新增公告：与票务无关", BASE,
      BASE + '<a href="/Item/14601.aspx">航展中心9号馆消防设施改造工程招标公告</a>',
      expect_critical=False)
 
+# ---------------------------------------------------------------- 聚合页（真实踩过的坑）
+#
+# 珠海本地宝这类聚合页，栏目入口是目录式链接（/xiuxian/zhhzmp/），标题叫
+# 「第十六届中国航展门票」。它长期挂在页面上，但标题里带“门票”二字，
+# 不设 item_url_pattern 的话会被当成“新增票务公告”，直接触发最高级告警。
+# 真实文章是 /数字.shtm。下面两条用例锁住这个行为。
+
+AGG_SRC = {"item_url_pattern": r"\.shtm$", "keyword_scan": False}
+
+AGG_BASE = ('<html><body><p>休闲 第十六届中国航展 正文结束</p>'
+            '<a href="/xiuxian/zhhzmp/">第十六届中国航展门票</a>'
+            '<a href="/xiuxian/106024.shtm">2026第十六届中国航展门票最新消息（持续更新中）'
+            '\r\n 2026-09-11</a>'
+            '</body></html>')
+
+# 6. 聚合页新增一个栏目导航入口 —— 不应告警
+case("聚合页：新增栏目导航项（目录式链接）不得告警", AGG_BASE,
+     AGG_BASE.replace('<a href="/xiuxian/zhhzmp/">第十六届中国航展门票</a>',
+                      '<a href="/xiuxian/zhhzmp/">第十六届中国航展门票</a>'
+                      '<a href="/xiuxian/dswjzghz/">第十六届中国航展</a>'),
+     expect_critical=False, src_extra=AGG_SRC)
+
+# 7. 聚合页新增一篇真实文章（标题含门票）—— 必须告警
+case("聚合页：新增真实文章（.shtm，标题含门票）要告警", AGG_BASE,
+     AGG_BASE + '<a href="/xiuxian/106700.shtm">第十六届中国航展门票开售时间公布</a>',
+     expect_critical=True, src_extra=AGG_SRC)
+
+# 8. 已收录文章的发布日期变了 —— 标题变了但不是新公告，不应告警
+case("聚合页：已收录文章的日期更新不得当成新公告", AGG_BASE,
+     AGG_BASE.replace("2026-09-11", "2026-09-12"),
+     expect_critical=False, src_extra=AGG_SRC)
+
 
 def main():
     monitor.http_request = fake_http
     monitor.dispatch = fake_dispatch
     passed = failed = 0
     try:
-        for name, prev, cur, expect_critical in CASES:
-            got = scenario(prev, cur)
+        for name, prev, cur, expect_critical, src_extra in CASES:
+            got = scenario(prev, cur, src_extra)
             is_critical = any("🚨" in g["title"] for g in got)
             ok = is_critical == expect_critical
             flag = "PASS" if ok else "FAIL"
