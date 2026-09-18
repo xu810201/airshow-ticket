@@ -445,6 +445,12 @@ ssh root@192.168.0.10 "systemctl daemon-reload && systemctl enable --now airshow
 写到服务器的 `local.env` 并把权限设成 600，然后**立刻在服务器上验证**——
 验证通过才会触发一次完整检查，并给你微信发一条测试消息。
 
+换 token 或想脚本化时，也可以直接传环境变量（注意这样会进 shell 历史）：
+
+```bash
+PUSHPLUS_TOKEN=你的token ./set-token.sh
+```
+
 也可以手动写：
 
 ```bash

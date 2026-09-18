@@ -2,7 +2,8 @@
 # 把 PushPlus token 写进 Linux 服务器的 /opt/airshow-monitor/local.env，并立刻验证。
 #
 # 用法：
-#   ./set-token.sh
+#   ./set-token.sh                      # 交互式粘贴（推荐）
+#   PUSHPLUS_TOKEN=xxx ./set-token.sh   # 非交互，便于脚本化（注意会进 shell 历史）
 #
 # 服务器地址/密钥不一样时用环境变量覆盖：
 #   AIRSHOW_HOST=deploy@10.0.0.5 AIRSHOW_KEY=~/.ssh/id_ed25519 ./set-token.sh
@@ -18,9 +19,14 @@ DEST="/opt/airshow-monitor"
 
 SSH_OPTS=(-i "$KEY" -o BatchMode=yes -o ConnectTimeout=10)
 
-printf '粘贴 PushPlus token（输入时不显示，回车确认）：'
-IFS= read -rs TOKEN
-printf '\n'
+if [ -n "${PUSHPLUS_TOKEN:-}" ]; then
+  TOKEN="$PUSHPLUS_TOKEN"
+  echo "    使用环境变量里的 PUSHPLUS_TOKEN，跳过交互输入"
+else
+  printf '粘贴 PushPlus token（输入时不显示，回车确认）：'
+  IFS= read -rs TOKEN
+  printf '\n'
+fi
 
 # 复制 token 时最常见的错误是多带了空格或换行，这里直接清掉，
 # 否则服务器上会报「令牌不正确」，查半天查不出来。
