@@ -74,8 +74,8 @@ URL = "https://example.com/a"
 CASES = []
 
 
-def case(name, prev, cur, expect_critical, src_extra=None):
-    CASES.append((name, {URL: prev}, {URL: cur}, expect_critical, src_extra))
+def case(name, prev, cur, expect_critical, src_extra=None, expect_marker=None):
+    CASES.append((name, {URL: prev}, {URL: cur}, expect_critical, src_extra, expect_marker))
 
 
 # 1. 仍是“暂未开售”，只改了日期 —— 不应误报为开售
@@ -138,20 +138,44 @@ case("聚合页：已收录文章的日期更新不得当成新公告", AGG_BASE
      AGG_BASE.replace("2026-09-11", "2026-09-12"),
      expect_critical=False, src_extra=AGG_SRC)
 
+# 9. 聚合页新增一篇跟航展无关、但标题带「票价」的文章 —— 不得告警
+#    真实踩过的坑：《2026横琴VAC电音节活动攻略（时间+地点+票价）》，
+#    只因为标题里有「票价」二字就被当成航展票务公告。
+case("聚合页：无关活动文章的「票价」不得命中票务公告", AGG_BASE,
+     AGG_BASE + '<a href="/xiuxian/106632.shtm">2026横琴VAC电音节活动攻略（时间+地点+票价）'
+                '\r\n 2026-09-17</a>',
+     expect_critical=False, src_extra=AGG_SRC)
+
+# 10. 标题只说「购票入口」、没有开售语义 —— 要推，但文案不能喊「开售信号」
+case("聚合页：票务线索要推，但不该喊成开售信号", AGG_BASE,
+     AGG_BASE + '<a href="/xiuxian/105349.shtm">2026中国航展购票入口官网\r\n 2026-09-17</a>',
+     expect_critical=False, src_extra=AGG_SRC, expect_marker="⚠️")
+
+# 11. 标题明确说开售 —— 必须是「开售信号」
+case("聚合页：标题明确开售要用开售文案", AGG_BASE,
+     AGG_BASE + '<a href="/xiuxian/105350.shtm">2026中国航展门票正式开售公告'
+                '\r\n 2026-09-17</a>',
+     expect_critical=True, src_extra=AGG_SRC, expect_marker="🚨")
+
 
 def main():
     monitor.http_request = fake_http
     monitor.dispatch = fake_dispatch
     passed = failed = 0
     try:
-        for name, prev, cur, expect_critical, src_extra in CASES:
+        for name, prev, cur, expect_critical, src_extra, expect_marker in CASES:
             got = scenario(prev, cur, src_extra)
-            is_critical = any("🚨" in g["title"] for g in got)
-            ok = is_critical == expect_critical
+            titles = [g["title"] for g in got]
+            is_critical = any("🚨" in t for t in titles)
+            if expect_marker is not None:
+                ok = any(expect_marker in t for t in titles) and is_critical == expect_critical
+            else:
+                ok = is_critical == expect_critical
             flag = "PASS" if ok else "FAIL"
             print(f"[{flag}] {name}")
             print(f"       期望开售告警={expect_critical}  实际={is_critical}  "
-                  f"推送条数={len(got)}")
+                  f"推送条数={len(got)}"
+                  + (f"  期望文案含 {expect_marker}" if expect_marker else ""))
             if got:
                 print(f"       标题：{got[0]['title']}")
             if ok:

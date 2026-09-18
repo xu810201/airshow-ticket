@@ -674,6 +674,8 @@ def check_source(src, cfg, state, baseline_mode):
     positive = kw_cfg.get("positive") or []
     negative = kw_cfg.get("negative") or []
     ticket_title_kw = kw_cfg.get("ticket_title") or []
+    onsale_title_kw = kw_cfg.get("ticket_title_onsale") or []
+    title_subject_kw = kw_cfg.get("title_subject") or []
 
     url = src["url"]
     key = src.get("id") or url
@@ -728,8 +730,25 @@ def check_source(src, cfg, state, baseline_mode):
     else:
         hits, strong_hits = [], []
 
-    ticket_items = [it for it in new_items if any(k in it["title"] for k in ticket_title_kw)]
+    # 对 keyword_scan=false 的源（聚合页），标题是唯一信号，所以必须再校验一次
+    # 「标题是不是在说本活动」。否则《2026横琴VAC电音节活动攻略（时间+地点+票价）》
+    # 这种跟航展毫无关系的文章，只因为标题里有「票价」就会被当成航务公告。
+    need_subject = not src.get("keyword_scan", True)
+
+    def _is_ticket_title(t: str) -> bool:
+        if not any(k in t for k in ticket_title_kw):
+            return False
+        if need_subject and title_subject_kw and not any(k in t for k in title_subject_kw):
+            return False
+        return True
+
+    ticket_items = [it for it in new_items if _is_ticket_title(it["title"])]
     other_items = [it for it in new_items if it not in ticket_items]
+
+    # 「票务相关」不等于「已经开售」：标题里只有「购票」「门票」时只作线索提醒，
+    # 只有出现开售/售票/预售/销售这类语义，才敢说「开售信号」。
+    onsale = bool(strong_hits) or any(
+        any(k in it["title"] for k in onsale_title_kw) for it in ticket_items)
 
     # 命中开售关键词时，把上下文句也带出来（含否定语境，便于人工判断）
     for h in hits:
@@ -793,6 +812,7 @@ def check_source(src, cfg, state, baseline_mode):
 
     alert = {
         "level": level,
+        "onsale": onsale,
         "src": src,
         "strong_hits": strong_hits,
         "ticket_items": ticket_items,
@@ -943,9 +963,13 @@ def run_once(cfg, *, dry_run=False, baseline=False) -> int:
     prefix = (cfg.get("notify") or {}).get("title_prefix", "珠海航展")
     pushed = 0
     for a in to_push:
-        title = ("🚨 " if a["level"] == "critical" else "📢 ") + prefix + "：" + a["src"]["name"]
         if a["level"] == "critical":
-            title = "🚨 " + prefix + "门票开售信号！"
+            # 标题必须区分「真的开售了」和「出现了票务线索」，否则用户会对
+            # 最高级告警脱敏 —— 一条总在喊狼来了的推送等于没有推送。
+            title = ("🚨 " + prefix + "门票开售信号！") if a.get("onsale") \
+                else ("⚠️ " + prefix + "：发现票务相关新内容")
+        else:
+            title = "📢 " + prefix + "：" + a["src"]["name"]
         body = build_alert(a["level"], a["src"], a["strong_hits"], a["ticket_items"],
                            a["other_items"], a["new_sentences"], a["page_url"], cfg)
         log("-" * 62)
