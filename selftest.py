@@ -31,8 +31,12 @@ def fake_dispatch(cfg, title, body, **kw):
     return [("mock", True, "OK")]
 
 
-def scenario(prev_pages, cur_pages, src_extra=None):
-    """先用 prev_pages 建基线，再用 cur_pages 跑一轮，返回捕获到的推送。"""
+def scenario(prev_pages, cur_pages, src_extra=None, first_run_is_current=False):
+    """先用 prev_pages 建基线，再用 cur_pages 跑一轮，返回捕获到的推送。
+
+    first_run_is_current=True 时跳过建基线那一步，直接用 cur_pages 当「首次运行」，
+    用来验证「首次运行就该告警」这类例外规则。
+    """
     with tempfile.TemporaryDirectory() as d:
         src = {"id": "t", "name": "测试源", "url": "https://example.com/a",
                "item_url_pattern": "/Item/", "notify_on_change": True,
@@ -51,9 +55,10 @@ def scenario(prev_pages, cur_pages, src_extra=None):
             "push": {},
             "sources": [src],
         }
-        PAGES.clear()
-        PAGES.update(prev_pages)
-        monitor.run_once(cfg, dry_run=True)        # 首次运行 -> 自动建基线
+        if not first_run_is_current:
+            PAGES.clear()
+            PAGES.update(prev_pages)
+            monitor.run_once(cfg, dry_run=True)    # 首次运行 -> 自动建基线
 
         CAPTURED.clear()
         PAGES.clear()
@@ -157,14 +162,58 @@ case("聚合页：标题明确开售要用开售文案", AGG_BASE,
                 '\r\n 2026-09-17</a>',
      expect_critical=True, src_extra=AGG_SRC, expect_marker="🚨")
 
+# ---------------------------------------------------------------- 购票按钮监控
+#
+# 官网首页的「门票购买」按钮是最硬的信号：未开售时是弹窗占位，
+# 开售后换成真实链接。下面几条锁住它的判定，尤其是「注释里的预留写法」。
+
+BTN_SRC = {
+    "item_url_pattern": "/Item/",
+    "button_watch": [{
+        "label": "门票购买",
+        "closed_hint": "尚未开放",
+        "open_url_pattern": r"piao\.airshow\.com\.cn|ticket",
+    }],
+}
+
+_HEAD = '<html><body><p>第十六届中国航展门票暂未开售，预计10月官宣票务方案。</p>'
+
+BTN_CLOSED = _HEAD + '<a onclick="alert(\'注册尚未开放，敬请关注!\')">门票购买</a></body></html>'
+
+BTN_OPEN = _HEAD + '<a href="https://piao.airshow.com.cn">门票购买</a></body></html>'
+
+# 官网源码里真实存在的形态：生效的是占位按钮，注释里备着「开售后」的写法
+BTN_COMMENTED = (_HEAD
+                 + '<a onclick="alert(\'注册尚未开放，敬请关注!\')">门票购买</a>'
+                 + '<!-- <a href="https://piao.airshow.com.cn">门票购买</a> -->'
+                 + '</body></html>')
+
+# 12. 按钮从弹窗占位变成真实购票链接 —— 必须最高级告警
+case("按钮：从占位变成真实购票链接要告警", BTN_CLOSED, BTN_OPEN,
+     expect_critical=True, src_extra=BTN_SRC, expect_marker="🚨")
+
+# 13. 注释里预留的「开售后」写法不得被当成已开售（最容易踩的误判）
+case("按钮：源码注释里的开售后写法不得误判", BTN_CLOSED, BTN_COMMENTED,
+     expect_critical=False, src_extra=BTN_SRC)
+
+# 14. 按钮一直是占位 —— 不告警
+case("按钮：一直未开放不得告警", BTN_CLOSED, BTN_CLOSED,
+     expect_critical=False, src_extra=BTN_SRC)
+
+# 15. 首次运行（建基线）时按钮就已开放 —— 确定性信号，不能因为“首次”就吞掉
+CASES.append(("按钮：首次运行时按钮已开放也要告警",
+              {URL: BTN_CLOSED}, {URL: BTN_OPEN}, True, BTN_SRC, "🚨", True))
+
 
 def main():
     monitor.http_request = fake_http
     monitor.dispatch = fake_dispatch
     passed = failed = 0
     try:
-        for name, prev, cur, expect_critical, src_extra, expect_marker in CASES:
-            got = scenario(prev, cur, src_extra)
+        for item in CASES:
+            name, prev, cur, expect_critical, src_extra, expect_marker = item[:6]
+            force_baseline = bool(item[6]) if len(item) > 6 else False
+            got = scenario(prev, cur, src_extra, force_baseline)
             titles = [g["title"] for g in got]
             is_critical = any("🚨" in t for t in titles)
             if expect_marker is not None:

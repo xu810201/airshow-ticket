@@ -19,6 +19,7 @@
   "notify": {
     "title_prefix": "珠海航展",
     "critical_title": "🚨 珠海航展门票开售信号！",
+    "button_open_title": "🚨 珠海航展门票购买按钮已开放！",
     "info_title": "📢 航展官网有更新",
     // info 级（页面有更新但没命中开售关键词）的同一来源冷却时间，防止刷屏
     "change_cooldown_minutes": 360,
@@ -151,6 +152,19 @@
       "name": "官网首页",
       "url": "https://www.airshow.com.cn/",
       "item_url_pattern": "/Item/",
+      // 首页上的「门票购买」按钮，是最硬的信号：
+      //   未开售时  <a onclick="alert('注册尚未开放，敬请关注!')">门票购买</a>
+      //   开售后    <a href="https://piao.airshow.com.cn">门票购买</a>
+      // 这是网站自己给出的状态，不需要猜语义，也不会被「暂未开售」这类否定句式骗到。
+      // 注意：源码里还留着一份被 <!-- --> 注释掉的「开售后」写法，程序会先剥掉注释，
+      //       否则会立刻误判成「已开售」。
+      "button_watch": [
+        {
+          "label": "门票购买",
+          "closed_hint": "尚未开放",
+          "open_url_pattern": "piao\\.airshow\\.com\\.cn|damai\\.cn|maoyan\\.com|showstart\\.com|youzan|mall\\.jd\\.com|ticket|piao"
+        }
+      ],
       "notify_on_change": true,
       "enabled": true
     },

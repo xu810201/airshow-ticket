@@ -246,7 +246,13 @@ _COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
 _TAG_RE = re.compile(r"<[^>]+>")
 _SPACE_RE = re.compile(r"[ \t\u3000\xa0]+")
 _A_RE = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.S | re.I)
-_HREF_RE = re.compile(r"""href\s*=\s*["']([^"']*)["']""", re.I)
+# 属性值必须用「成对引号」匹配，不能写 [^"']* ——
+# onclick="alert('注册尚未开放，敬请关注!')" 的值里含单引号，
+# 用 [^"']* 会在第一个单引号处截断，只取到 "alert("，
+# 于是「未开放」判定永远匹配不上，按钮状态会一直是「未知」。
+_ATTR_VALUE = r"""(["'])(.*?)\1"""
+_HREF_RE = re.compile(r"""href\s*=\s*""" + _ATTR_VALUE, re.I | re.S)
+_ONCLICK_RE = re.compile(r"""onclick\s*=\s*""" + _ATTR_VALUE, re.I | re.S)
 _SENT_RE = re.compile(r"[。！？!?；;\n\r]+")
 
 
@@ -285,12 +291,16 @@ def extract_items(html: str, base_url: str, url_pattern: str | None = None,
     """抽取页面里的链接条目（公告列表用），用于发现“新增公告”。"""
     pat = re.compile(url_pattern) if url_pattern else None
     items, seen = [], set()
-    for m in _A_RE.finditer(html or ""):
+    # 剥掉注释再抽链接：注释里的 <a> 不是页面内容。
+    # 官网首页就藏着一份被注释掉的 <a href="https://piao.airshow.com.cn">门票购买</a>，
+    # 不剥的话会被当成页面上真实存在的链接。
+    body = _COMMENT_RE.sub(" ", html or "")
+    for m in _A_RE.finditer(body):
         attrs, inner = m.group(1), m.group(2)
         hm = _HREF_RE.search(attrs)
         if not hm:
             continue
-        href = hm.group(1).strip()
+        href = hm.group(2).strip()
         if not href or href.startswith(("javascript:", "#", "mailto:", "tel:")):
             continue
         if pat and not pat.search(href):
@@ -306,6 +316,84 @@ def extract_items(html: str, base_url: str, url_pattern: str | None = None,
         if len(items) >= max_items:
             break
     return items
+
+
+def extract_buttons(html: str, base_url: str, rules):
+    """监控页面上指定按钮/入口的状态。
+
+    为什么需要它：官网的「门票购买」按钮在未开售时是个弹窗占位
+    （`onclick="alert('注册尚未开放，敬请关注!')"`），开售后才换成真实链接
+    （`href="https://piao.airshow.com.cn"`）。这个状态切换是**网站自己说的**，
+    比关键词扫描硬得多 —— 它不需要猜测语义，也不会被否定句式骗到。
+
+    规则字段：
+        label             按钮文字，如「门票购买」
+        closed_hint       处于未开放状态时 onclick 里会出现的字样
+        open_url_pattern  链接匹配到什么才算「已开放」（可选，不填则任意真实链接都算）
+
+    ⚠️ 必须先剥掉 HTML 注释：官网把「开售后」的写法注释在源码里备着，
+       不剥注释会立刻误判成「已开售」—— 这是最要命的一种误报。
+    """
+    if not rules:
+        return []
+    body = _COMMENT_RE.sub(" ", html or "")
+
+    anchors = []
+    for m in _A_RE.finditer(body):
+        attrs, inner = m.group(1), m.group(2)
+        text = htmllib.unescape(_TAG_RE.sub("", inner))
+        text = _SPACE_RE.sub(" ", text).strip()
+        hm = _HREF_RE.search(attrs)
+        om = _ONCLICK_RE.search(attrs)
+        anchors.append({
+            "text": text,
+            "href": (hm.group(2).strip() if hm else ""),
+            "onclick": (om.group(2).strip() if om else ""),
+        })
+
+    out = []
+    for rule in rules:
+        label = rule.get("label") or ""
+        closed_hint = rule.get("closed_hint") or ""
+        open_pat = re.compile(rule["open_url_pattern"]) if rule.get("open_url_pattern") else None
+
+        matched = [a for a in anchors if label and label in a["text"]]
+        hrefs, onclicks = [], []
+        open_cnt = closed_cnt = 0
+
+        for a in matched:
+            href = a["href"]
+            # javascript:/# 这类不是可跳转的购票入口，不能算「已开放」
+            usable = bool(href) and not href.lower().startswith(("javascript:", "#"))
+            if usable and (open_pat is None or open_pat.search(href)):
+                open_cnt += 1
+                hrefs.append(urllib.parse.urljoin(base_url, href))
+            elif closed_hint and closed_hint in a["onclick"]:
+                closed_cnt += 1
+                onclicks.append(a["onclick"])
+            elif usable:
+                # 有链接但不符合购票入口特征 —— 记下来供人工判断，但不判开售
+                hrefs.append(urllib.parse.urljoin(base_url, href))
+
+        if open_cnt:
+            state = "open"
+        elif closed_cnt:
+            state = "closed"
+        elif matched:
+            state = "unknown"
+        else:
+            state = "missing"
+
+        out.append({
+            "label": label,
+            "state": state,
+            "count": len(matched),
+            "open_count": open_cnt,
+            "closed_count": closed_cnt,
+            "hrefs": sorted(set(hrefs))[:5],
+            "onclicks": sorted(set(onclicks))[:3],
+        })
+    return out
 
 
 def scan_keywords(text: str, positive, negative, context_len: int = 240):
@@ -623,9 +711,12 @@ def sha1(text: str) -> str:
 
 
 def build_alert(level, src, strong_hits, ticket_items, other_items,
-                new_sentences, page_url, cfg):
+                new_sentences, page_url, cfg, buttons=None, button_opened=None):
     notify = cfg.get("notify") or {}
-    if level == "critical":
+    button_opened = button_opened or []
+    if button_opened:
+        head = notify.get("button_open_title", "🚨 珠海航展门票购买按钮已开放！")
+    elif level == "critical":
         head = notify.get("critical_title", "🚨 珠海航展门票开售信号！")
     else:
         head = notify.get("info_title", "📢 航展官网有更新")
@@ -634,6 +725,23 @@ def build_alert(level, src, strong_hits, ticket_items, other_items,
     L.append(f"- **来源**：{src['name']}")
     L.append(f"- **时间**：{ts()}（北京时间）")
     L.append(f"- **页面**：[点此打开]({page_url})")
+
+    if button_opened:
+        L += ["", "**购票按钮已经可以点了**"]
+        for b in button_opened:
+            L.append(f"- 「{b['label']}」→ {b['count']} 处入口，其中 "
+                     f"{b['open_count']} 处已带真实链接")
+            for u in b["hrefs"][:3]:
+                L.append(f"    - {u}")
+        L += ["", "> 这不是关键词猜出来的，是官网把按钮从弹窗占位换成了真实链接 —— "
+                  "网站自己说开卖了。"]
+
+    if buttons and not button_opened:
+        L += ["", "**按钮状态**"]
+        for b in buttons:
+            mark = {"open": "✅ 可点", "closed": "⛔ 未开放",
+                    "unknown": "❓ 状态未知", "missing": "⚠️ 找不到"}.get(b["state"], b["state"])
+            L.append(f"- 「{b['label']}」：{mark}（页面上 {b['count']} 处）")
 
     if strong_hits:
         L += ["", "**命中开售关键词**"]
@@ -745,10 +853,21 @@ def check_source(src, cfg, state, baseline_mode):
     ticket_items = [it for it in new_items if _is_ticket_title(it["title"])]
     other_items = [it for it in new_items if it not in ticket_items]
 
+    # ---- 按钮/入口状态：比关键词更硬的一层信号
+    # 官网的「门票购买」按钮未开售时是弹窗占位，开售后换成真实链接。
+    # 这是网站自己给出的状态，不需要猜语义，也不会被否定句式骗到。
+    button_rules = src.get("button_watch") or []
+    buttons = extract_buttons(html, final_url, button_rules)
+    prev_buttons = {b.get("label"): b for b in (prev.get("buttons") or [])}
+    button_opened = [
+        b for b in buttons
+        if b["state"] == "open" and (prev_buttons.get(b["label"]) or {}).get("state") != "open"
+    ]
+
     # 「票务相关」不等于「已经开售」：标题里只有「购票」「门票」时只作线索提醒，
     # 只有出现开售/售票/预售/销售这类语义，才敢说「开售信号」。
-    onsale = bool(strong_hits) or any(
-        any(k in it["title"] for k in onsale_title_kw) for it in ticket_items)
+    onsale = (bool(strong_hits) or bool(button_opened)
+              or any(any(k in it["title"] for k in onsale_title_kw) for it in ticket_items))
 
     # 命中开售关键词时，把上下文句也带出来（含否定语境，便于人工判断）
     for h in hits:
@@ -760,14 +879,26 @@ def check_source(src, cfg, state, baseline_mode):
 
     # ---- 判定告警级别
     level = None
-    if strong_hits or ticket_items:
+    if button_opened or strong_hits or ticket_items:
         level = "critical"
     elif notify_on_change and (new_items or new_sentences or hash_changed):
+        level = "info"
+    elif not is_baseline and button_rules and any(
+            # 只对「上次记录过这个按钮、这次状态变了」告警。
+            # 给已有源新加 button_watch 时，首次观察到状态属于建立记录，不算变化。
+            b["label"] in prev_buttons
+            and prev_buttons[b["label"]].get("state") != b["state"]
+            for b in buttons):
+        # 按钮从「开放」退回「关闭」、或从「找不到」变成「找到」，也值得看一眼
         level = "info"
 
     vlog(f"{src['name']}：HTTP {status}，正文 {len(text)} 字，条目 {len(items)}，"
          f"新条目 {len(new_items)}，新句子 {len(new_sentences)}，"
          f"关键词命中 {len(hits)}（其中非否定 {len(strong_hits)}），hash变更={hash_changed}")
+    for b in buttons:
+        vlog(f"    按钮「{b['label']}」：状态={b['state']}，"
+             f"命中 {b['count']} 处（可点 {b['open_count']} / 未开放 {b['closed_count']}）"
+             + (f"，链接 {b['hrefs']}" if b["hrefs"] else ""))
 
     # ---- 更新状态（无论是否告警都要更新）
     state["sources"][key] = {
@@ -775,12 +906,17 @@ def check_source(src, cfg, state, baseline_mode):
         "hash": digest,
         "items": [it["key"] for it in items][:200],
         "sentences": uniq_sent_keys,
+        "buttons": buttons,
         "checked_at": ts(),
     }
 
-    if is_baseline:
+    # 首次运行只建基线，不告警 —— 但有一个例外：如果购票按钮「已经是可点状态」，
+    # 那是网站自己给出的确定性信号，不能因为「首次运行」就吞掉。
+    if is_baseline and not button_opened:
         log(f"{src['name']}：建立基线（{len(items)} 个条目），本次不告警")
         return None, None
+    if is_baseline and button_opened:
+        log(f"{src['name']}：首次运行，但购票按钮已可点 —— 确定性信号，立即告警", "WARN")
 
     if level is None:
         log(f"{src['name']}：无变化")
@@ -790,10 +926,14 @@ def check_source(src, cfg, state, baseline_mode):
     # 签名只能由「本次告警的证据」决定，不能用整页正文的 hash：
     # 聚合类页面的正文会频繁变动（推荐位轮换、CDN 缓存切换），
     # 拿整页 hash 当签名，同一条误报会反复突破去重、反复推送。
-    sig_parts = sorted(it["key"] for it in new_items)
-    sig_parts += sorted(h["sentence"] for h in strong_hits)
-    if not sig_parts:
-        sig_parts = new_sentences[:5]
+    if button_opened:
+        # 按钮开放是最高优先级证据，签名只认它，免得被同轮的其他噪音带偏
+        sig_parts = sorted(f"button|{b['label']}|{','.join(b['hrefs'])}" for b in button_opened)
+    else:
+        sig_parts = sorted(it["key"] for it in new_items)
+        sig_parts += sorted(h["sentence"] for h in strong_hits)
+        if not sig_parts:
+            sig_parts = new_sentences[:5]
     sig_src = "|".join(sig_parts)
     sig = f"{key}|{level}|{sha1(sig_src)[:16]}"
     sent = state["sent"]
@@ -813,6 +953,8 @@ def check_source(src, cfg, state, baseline_mode):
     alert = {
         "level": level,
         "onsale": onsale,
+        "button_opened": button_opened,
+        "buttons": buttons,
         "src": src,
         "strong_hits": strong_hits,
         "ticket_items": ticket_items,
@@ -964,14 +1106,19 @@ def run_once(cfg, *, dry_run=False, baseline=False) -> int:
     pushed = 0
     for a in to_push:
         if a["level"] == "critical":
-            # 标题必须区分「真的开售了」和「出现了票务线索」，否则用户会对
-            # 最高级告警脱敏 —— 一条总在喊狼来了的推送等于没有推送。
-            title = ("🚨 " + prefix + "门票开售信号！") if a.get("onsale") \
-                else ("⚠️ " + prefix + "：发现票务相关新内容")
+            # 标题必须区分「按钮真的能点了」「出现开售语义」「只是票务线索」三种，
+            # 否则用户会对最高级告警脱敏 —— 一条总在喊狼来了的推送等于没有推送。
+            if a.get("button_opened"):
+                title = "🚨 " + prefix + "门票购买按钮已开放！"
+            elif a.get("onsale"):
+                title = "🚨 " + prefix + "门票开售信号！"
+            else:
+                title = "⚠️ " + prefix + "：发现票务相关新内容"
         else:
             title = "📢 " + prefix + "：" + a["src"]["name"]
         body = build_alert(a["level"], a["src"], a["strong_hits"], a["ticket_items"],
-                           a["other_items"], a["new_sentences"], a["page_url"], cfg)
+                           a["other_items"], a["new_sentences"], a["page_url"], cfg,
+                           buttons=a.get("buttons"), button_opened=a.get("button_opened"))
         log("-" * 62)
         log(f"触发 {a['level'].upper()} 告警：{a['src']['name']}")
         log(body)
